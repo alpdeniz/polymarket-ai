@@ -6,17 +6,25 @@ import model from "../src/models";
 
 async function main(question: string) {
   const today = new Date().toDateString();
-  const news = fs.readFileSync(`./news_${today}.md`, "utf8");
-  const predictions = fs.readFileSync(`./output/suggestions-${today}.md`, "utf8");
+  const newsFile = `./output/news_${today}.md`;
+  const analysisFile = `./output/stock-analysis-${today}.md`;
+
+  if (!fs.existsSync(newsFile) || !fs.existsSync(analysisFile)) {
+    console.error("Run the main analysis first (npm start) to generate today's files.");
+    process.exit(1);
+  }
+
+  const news = fs.readFileSync(newsFile, "utf8");
+  const analysis = fs.readFileSync(analysisFile, "utf8");
 
   const response = await model.query(`\
 News summary:
 ${news}
 
-Predictions:
-${predictions}
+Stock Analysis:
+${analysis}
 
-Given above news summary and predictions, answer the following question:
+Given the above news summary and stock analysis, answer the following question:
 
 ${question}`);
   console.log(response);

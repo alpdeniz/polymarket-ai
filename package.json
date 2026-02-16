@@ -1,7 +1,7 @@
 {
-  "name": "polymarket-ai",
-  "version": "1.0.0",
-  "description": "",
+  "name": "stock-analyzer-ai",
+  "version": "2.0.0",
+  "description": "AI-powered global stock market analyzer with multi-stage pipeline",
   "license": "ISC",
   "author": "",
   "main": "./dist/index.js",

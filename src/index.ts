@@ -1,66 +1,56 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-import { buildQuestion, preparePromptWithContext, ProcessedQuestion } from "./question";
-import { triageMarkets } from "./triage";
-import { enrichWithOrderBooks } from "./orderbook";
+import { fetchStockUniverse } from "./stocks";
+import { triageStocks } from "./triage";
+import { enrichStocks } from "./enrich";
+import { prepareAnalysis } from "./analysis";
 import model from "./models";
 import fs from "fs";
-
-const ENDING_IN_X_DAYS = Number(process.env.ENDING_IN_X_DAYS) || 30;
-const MARKET_LIMIT = Number(process.env.MARKET_WINDOW_LIMIT) || 500;
-const MIN_VOLUME_24H = 1000;
 
 async function main(): Promise<void> {
   const now = new Date();
 
-  // ── Stage 0: Fetch all active markets from Gamma API ──────────────────
-  const endMin = encodeURIComponent(now.toISOString());
-  const endMax = encodeURIComponent(
-    new Date(Date.now() + ENDING_IN_X_DAYS * 86400000).toISOString(),
-  );
-  const url = `https://gamma-api.polymarket.com/markets?limit=${MARKET_LIMIT}&offset=0&active=true&closed=false&end_date_min=${endMin}&end_date_max=${endMax}&order=volume&ascending=false`;
-  console.log(`[Stage 0] Fetching markets: ${url}`);
+  // ── Stage 0: Fetch stock universe with price data ────────────────────
+  console.log(`[Stage 0] Fetching stock universe with price history...`);
+  const allStocks = await fetchStockUniverse();
+  console.log(`[Stage 0] ${allStocks.length} stocks fetched with -1d/-7d/-1m/-1y data\n`);
 
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Polymarket API error: ${response.status}`);
-  const rawMarkets = await response.json();
-
-  const allQuestions: ProcessedQuestion[] = rawMarkets
-    .map(buildQuestion)
-    .filter((q: ProcessedQuestion) => q.vol1d >= MIN_VOLUME_24H && q.clobTokenIds.length > 0);
-
-  console.log(
-    `[Stage 0] ${rawMarkets.length} fetched → ${allQuestions.length} after liquidity filter`,
-  );
-
-  // ── Stage 1: AI triage — fast screening to shortlist ~20 markets ──────
-  console.log(`[Stage 1] Running AI triage on ${allQuestions.length} markets...`);
-  const triageResults = await triageMarkets(allQuestions);
-
-  if (triageResults.length === 0) {
-    console.error("[Stage 1] Triage returned no markets. Aborting.");
+  if (allStocks.length === 0) {
+    console.error("[Stage 0] No stocks fetched. Check network/API. Aborting.");
     return;
   }
 
-  const selectedSlugs = new Set(triageResults.map((t) => t.slug));
-  const shortlisted = allQuestions.filter((q) => selectedSlugs.has(q.slug));
+  // ── Stage 1: AI triage — screen for the most promising ~25 stocks ────
+  console.log(`[Stage 1] Running AI triage on ${allStocks.length} stocks...`);
+  const triageResults = await triageStocks(allStocks);
+
+  if (triageResults.length === 0) {
+    console.error("[Stage 1] Triage returned no stocks. Aborting.");
+    return;
+  }
+
+  const selectedSymbols = new Set(triageResults.map((t) => t.symbol));
+  const shortlisted = allStocks.filter((s) => selectedSymbols.has(s.symbol));
   console.log(
-    `[Stage 1] ${triageResults.length} selected by AI, ${shortlisted.length} matched`,
+    `[Stage 1] ${triageResults.length} selected by AI, ${shortlisted.length} matched\n`,
   );
 
-  // ── Stage 2: Enrich shortlisted markets with CLOB order book depth ────
-  console.log(`[Stage 2] Fetching CLOB order book depth for ${shortlisted.length} markets...`);
-  const enriched = await enrichWithOrderBooks(shortlisted);
+  // ── Stage 2: Enrich shortlisted stocks with fundamentals ─────────────
+  console.log(`[Stage 2] Fetching fundamentals for ${shortlisted.length} stocks...`);
+  const enriched = await enrichStocks(shortlisted);
+  console.log(`[Stage 2] Enrichment complete\n`);
 
-  // ── Stage 3: Full analysis with enriched data ─────────────────────────
-  console.log(`[Stage 3] Running full analysis on ${enriched.length} enriched markets...`);
-  const prompt = await preparePromptWithContext(enriched, triageResults);
+  // ── Stage 3: Full analysis and verdict ───────────────────────────────
+  console.log(`[Stage 3] Running full analysis on ${enriched.length} enriched stocks...`);
+  const prompt = await prepareAnalysis(enriched, triageResults);
   const result = await model.query(prompt);
-  console.log("[Stage 3] Analysis complete");
+  console.log("[Stage 3] Analysis complete\n");
 
-  fs.writeFileSync(`./output/suggestions-${now.toDateString()}.md`, result);
-  console.log(`Output: suggestions-${now.toDateString()}.md`);
+  if (!fs.existsSync("./output")) fs.mkdirSync("./output");
+  const filename = `./output/stock-analysis-${now.toDateString()}.md`;
+  fs.writeFileSync(filename, result);
+  console.log(`Output: ${filename}`);
 }
 
 main();

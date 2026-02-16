@@ -1,106 +1,104 @@
 import model from "./models";
-import { ProcessedQuestion } from "./question";
+import { ProcessedStock } from "./stocks";
 import { getNews } from "./news";
-import { getPrices } from "./prices";
 
 // ---------------------------------------------------------------------------
-// Triage prompt — fast first pass to shortlist the most promising markets
+// Triage prompt — fast first pass to shortlist the most promising stocks
 // ---------------------------------------------------------------------------
 
 const TRIAGE_SYSTEM = `\
-You are a prediction-market screening engine. Your ONLY job is to select the markets most likely to contain a tradeable edge from a large list.
+You are a stock screening engine. Your ONLY job is to select the stocks most likely to contain a profitable opportunity from a large universe.
 
 Selection criteria (in priority order):
-1. FORENSIC — outcome is already determinable or nearly so from observable data (scores, filings, prices, published stats).
-2. NEWS-DRIVEN — a recent news event materially changes the probability but the market hasn't repriced.
-3. ASYMMETRIC — low-priced market (< $0.30) or high-priced (> $0.85) where even a small edge yields outsized returns.
-4. ARBITRAGE — priceSum significantly below 1.00 across outcomes, or cross-market inconsistencies.
-5. RESOLUTION IMMINENT — resolves within 48-72 hours and current state is knowable.
-6. ANALYTICAL — your probability estimate differs from market by ≥ 10 pp with solid reasoning.
+1. MOMENTUM — Strong recent price appreciation (positive 1d/7d/1m) with above-average volume. Trend is your friend.
+2. VALUE — Trading significantly below 52-week high with low PE relative to sector, strong fundamentals. Market is underpricing the stock.
+3. RECOVERY — Dropped >20% from 52-week high but has strong fundamentals (reasonable PE, high market cap). Mean-reversion play.
+4. BREAKOUT — Near 52-week high with accelerating volume. Likely to break through resistance.
+5. GROWTH — Strong 1-year returns indicating sustained growth trajectory. Forward PE lower than trailing PE suggests accelerating earnings.
+6. YIELD — High dividend yield (>3%) with sustainable payout and stable/growing price. Income play.
+7. SECTOR_ROTATION — Sector showing relative strength vs broad market (compare individual stocks to ETF benchmarks).
 
 Rejection criteria (skip these):
-• Sports game outcomes without live score data — sharp bettors dominate.
-• Markets with spread > 15% of midPrice — untradeable.
-• Markets priced 0.95-1.00 with < 5% edge — capital traps after fees.
-• Markets with no 24h volume and no forensic edge.
+• Illiquid names with very low volume relative to market cap.
+• Stocks in confirmed downtrend across ALL timeframes (negative 1d, 7d, 1m, 1y) with no fundamental support.
+• Overextended stocks (>40% above 1-year-ago price) with deteriorating momentum (negative 1d and 7d).
+• ETFs and index funds — we want individual stock picks (except when identifying sector trends).
+• Commodities and crypto — skip BTC-USD, ETH-USD, GC=F, etc. unless exceptionally noteworthy.
 
-IMPORTANT: You are screening, not analyzing. Be aggressive about including markets that MIGHT have an edge. The next stage will do deep analysis. When in doubt, include.`;
+IMPORTANT: You are screening, not analyzing. Be aggressive about including stocks that MIGHT have an edge. The next stage will do deep analysis. When in doubt, include.`;
 
 function triageUserPrompt(
-  marketData: string,
-  marketCount: number,
+  stockData: string,
+  stockCount: number,
   news: string,
-  prices: string,
 ): string {
   return `\
-# MARKET TRIAGE — ${new Date().toISOString()}
+# STOCK TRIAGE — ${new Date().toISOString()}
 
-## Context
+## Recent News Context
 ${news}
 
-## Financial Prices
-${prices}
-
-## Markets (${marketCount} total)
+## Stock Universe (${stockCount} total)
 \`\`\`json
-${marketData}
+${stockData}
 \`\`\`
 
 ## Task
 
-From the ${marketCount} markets above, select the **top 20** (or fewer if fewer qualify) most likely to contain a tradeable edge.
+From the ${stockCount} stocks above, select the **top 25** (or fewer if fewer qualify) most likely to offer a profitable trading or investment opportunity in the next 1–30 days.
 
-For each selected market, provide:
-- The market's \`slug\` (the unique identifier)
-- A one-line reason why it might have an edge
-- Which edge type it falls under (FORENSIC / NEWS / ASYMMETRIC / ARBITRAGE / RESOLUTION / ANALYTICAL)
+For each selected stock, provide:
+- The stock's \`symbol\`
+- A one-line reason why it might be profitable
+- Which opportunity type it falls under (MOMENTUM / VALUE / RECOVERY / BREAKOUT / GROWTH / YIELD / SECTOR_ROTATION)
+- A \`score\` from 1-10 indicating how promising the opportunity looks
 
 You MUST respond with ONLY a valid JSON array, no markdown fences, no commentary. Format:
 [
-  { "slug": "market-slug-here", "reason": "...", "edgeType": "FORENSIC" },
+  { "symbol": "AAPL", "reason": "...", "edgeType": "MOMENTUM", "score": 8 },
   ...
 ]`;
 }
 
 // ---------------------------------------------------------------------------
-// Triage: slim-down view of markets for the screening prompt
+// Triage: slim-down view of stocks for the screening prompt
 // ---------------------------------------------------------------------------
 
 interface TriageView {
-  slug: string;
-  question: string;
-  description: string;
-  resolutionSource: string;
-  daysToResolution: number;
-  outcomes: { label: string; price: number }[];
-  priceSum: string;
-  volume: string;
-  vol1d: number;
-  midPrice: string;
-  spreadPct: string;
-  liquidity: string;
-  pChange1h: string;
-  pChange1d: string;
-  pChange7d: string;
+  symbol: string;
+  name: string;
+  price: number;
+  marketCap: number;
+  pe: number | null;
+  forwardPe: number | null;
+  dividendYield: number | null;
+  change1d: string;
+  change7d: string;
+  change1m: string;
+  change1y: string;
+  pctFrom52wHigh: string;
+  pctFrom52wLow: string;
+  volume: number;
+  avgVolume: number;
 }
 
-function toTriageView(q: ProcessedQuestion): TriageView {
+function toTriageView(s: ProcessedStock): TriageView {
   return {
-    slug: q.slug,
-    question: q.question,
-    description: q.description.slice(0, 200),
-    resolutionSource: q.resolutionSource,
-    daysToResolution: q.daysToResolution,
-    outcomes: q.outcomeParsed,
-    priceSum: q.priceSum,
-    volume: q.volume,
-    vol1d: q.vol1d,
-    midPrice: q.midPrice,
-    spreadPct: q.spreadPct,
-    liquidity: q.liquidity,
-    pChange1h: q.pChange1h,
-    pChange1d: q.pChange1d,
-    pChange7d: q.pChange7d,
+    symbol: s.symbol,
+    name: s.name,
+    price: s.price,
+    marketCap: s.marketCap,
+    pe: s.pe,
+    forwardPe: s.forwardPe,
+    dividendYield: s.dividendYield,
+    change1d: s.change1d,
+    change7d: s.change7d,
+    change1m: s.change1m,
+    change1y: s.change1y,
+    pctFrom52wHigh: s.pctFrom52wHigh,
+    pctFrom52wLow: s.pctFrom52wLow,
+    volume: s.volume,
+    avgVolume: s.avgVolume,
   };
 }
 
@@ -109,31 +107,31 @@ function toTriageView(q: ProcessedQuestion): TriageView {
 // ---------------------------------------------------------------------------
 
 export interface TriageResult {
-  slug: string;
+  symbol: string;
   reason: string;
   edgeType: string;
+  score: number;
 }
 
-export async function triageMarkets(
-  markets: ProcessedQuestion[],
+export async function triageStocks(
+  stocks: ProcessedStock[],
 ): Promise<TriageResult[]> {
-  const views = markets.map(toTriageView);
-  const marketData = JSON.stringify(views, null, 2);
+  const views = stocks.map(toTriageView);
+  const stockData = JSON.stringify(views, null, 2);
 
-  const [news, prices] = await Promise.all([getNews(), getPrices()]);
+  const news = await getNews();
 
   console.log(
-    `Triage: sending ${markets.length} markets (${marketData.length} chars) to screening model`,
+    `Triage: sending ${stocks.length} stocks (${stockData.length} chars) to screening model`,
   );
 
   const prompt = {
     system: TRIAGE_SYSTEM,
-    user: triageUserPrompt(marketData, markets.length, news, prices),
+    user: triageUserPrompt(stockData, stocks.length, news),
   };
 
   const raw = await model.query(prompt);
 
-  // Extract JSON from response (handle model wrapping it in markdown fences)
   const jsonMatch = raw.match(/\[[\s\S]*\]/);
   if (!jsonMatch) {
     console.error("Triage: failed to parse JSON from model response");
@@ -143,7 +141,7 @@ export async function triageMarkets(
 
   try {
     const parsed: TriageResult[] = JSON.parse(jsonMatch[0]);
-    console.log(`Triage: model selected ${parsed.length} markets`);
+    console.log(`Triage: model selected ${parsed.length} stocks`);
     return parsed;
   } catch (err) {
     console.error("Triage: JSON parse error:", err);
