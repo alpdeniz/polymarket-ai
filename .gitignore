@@ -1,0 +1,5 @@
+.env
+output/*
+*.zip
+node_modules/
+dist/
